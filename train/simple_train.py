@@ -1,5 +1,6 @@
 import argparse
 import copy
+import datetime
 import json
 import os
 import random
@@ -144,6 +145,8 @@ def main(args):
 
     with open(meta_path, "r", encoding="utf-8") as f:
         meta = json.load(f)
+    dataset_name = str(meta.get("dataset", os.path.basename(data_dir)))
+    run_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
     train_ds = SequenceDataset(train_csv, use_uncertainty_aug=bool(args.use_uncertainty_aug), aug_flip_prob=args.aug_flip_prob)
     test_ds = SequenceDataset(test_csv, use_uncertainty_aug=False, aug_flip_prob=0.0)
@@ -173,9 +176,10 @@ def main(args):
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
 
-    os.makedirs(args.save_dir, exist_ok=True)
+    dataset_save_dir = os.path.join(args.save_dir, dataset_name)
+    os.makedirs(dataset_save_dir, exist_ok=True)
     best_auc = -1.0
-    best_path = os.path.join(args.save_dir, "best_model.pth")
+    best_path = os.path.join(dataset_save_dir, "best_model.pth")
     best_epoch = -1
     best_acc = -1.0
     best_state = None
@@ -202,7 +206,8 @@ def main(args):
             best_epoch = epoch
             best_acc = test_acc
             best_state = copy.deepcopy(model.state_dict())
-            tagged_path = os.path.join(args.save_dir, f"best_epoch{epoch:03d}_auc{test_auc:.6f}.pth")
+            tagged_name = f"{dataset_name}_best_{run_ts}_epoch{epoch:03d}_auc{test_auc:.6f}.pth"
+            tagged_path = os.path.join(dataset_save_dir, tagged_name)
             torch.save(best_state, tagged_path)
             torch.save(best_state, best_path)
             print(f"  Saved best: {tagged_path}", flush=True)
@@ -217,7 +222,7 @@ def main(args):
         "best_test_acc": best_acc,
         "best_model_path": best_path,
     }
-    summary_path = os.path.join(args.save_dir, "best_metrics.json")
+    summary_path = os.path.join(dataset_save_dir, "best_metrics.json")
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
     print(f"Training done. Best epoch={best_epoch}, test_auc={best_auc:.6f}, test_acc={best_acc:.6f}", flush=True)

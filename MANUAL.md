@@ -149,16 +149,25 @@ python train/simple_train.py --data_dir ./data/<dataset_name> --save_dir ./saved
 
 1. 带标签版本（保留历史最佳快照）
 ```text
-best_epoch{EPOCH}_auc{AUC}.pth
+{DATASET}_best_{YYYYMMDD_HHMMSS}_epoch{EPOCH}_auc{AUC}.pth
 ```
 示例：
 ```text
-best_epoch037_auc0.823456.pth
+assist2017_best_20260501_153000_epoch037_auc0.823456.pth
 ```
 
 2. 固定文件名版本（始终指向当前最佳）
 ```text
 best_model.pth
+```
+
+以上文件都会保存在：
+```text
+<save_dir>/<dataset_name>/
+```
+示例：
+```text
+./saved_model_simple/assist2017/
 ```
 
 训练结束后还会写一份摘要文件：
