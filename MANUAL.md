@@ -12,6 +12,7 @@
 
 ## 2. 目录与脚本说明
 - 预处理脚本：[preprocess/prepare_assist2009.py](/E:/desk_file/KennKt/preprocess/prepare_assist2009.py)
+- 通用注册预处理入口：[preprocess/prepare_registered_datasets.py](/E:/desk_file/KennKt/preprocess/prepare_registered_datasets.py)
 - 训练脚本：[train/simple_train.py](/E:/desk_file/KennKt/train/simple_train.py)
 - 模型定义：[models/KeenKT.py](/E:/desk_file/KennKt/models/KeenKT.py)
 
@@ -63,18 +64,76 @@ python preprocess/prepare_assist2009.py --data_dir ./data/assist2009
 - `keyid2idx.json`
 - `meta.json`
 
+## 5.1 注册数据集预处理（推荐）
+如果要处理多个数据集，使用统一注册入口：
+
+```bash
+python preprocess/prepare_registered_datasets.py --dataset <dataset_name> --data_dir <dataset_dir>
+```
+
+当前已注册：
+- `assist2009`
+- `assist2017`
+- `statics2011`
+- `xes3g5m`
+
+统一输出同一套文件（供训练脚本直接读取）：
+- `train_valid_sequences.csv`
+- `test_sequences.csv`
+- `keyid2idx.json`
+- `meta.json`
+
+### A. assist2009
+```bash
+python preprocess/prepare_registered_datasets.py --dataset assist2009 --data_dir ./data/assist2009 --raw_file skill_builder_data.csv
+```
+
+### B. assist2017
+把 `anonymized_full_release_competition_dataset.csv` 放到 `./data/assist2017/` 后执行：
+```bash
+python preprocess/prepare_registered_datasets.py --dataset assist2017 --data_dir ./data/assist2017 --raw_file anonymized_full_release_competition_dataset.csv --encoding utf-8
+```
+
+说明：
+- 处理逻辑与 `assist2009` 一致，只是字段映射不同
+- 使用字段：`studentId`、`skill`、`problemId`、`correct`、`action_num`
+- 每个学生按 `action_num` 排序后构造序列，再做 8/2 切分
+
+### C. statics2011
+把 `AllData_student_step_2011F.csv` 放到 `./data/statics2011/` 后执行：
+```bash
+python preprocess/prepare_registered_datasets.py --dataset statics2011 --data_dir ./data/statics2011 --raw_file AllData_student_step_2011F.csv --skill_col "KC (F2011)" --encoding utf-8-sig
+```
+
+说明：
+- 默认用 `First Attempt` 转 `responses`（`correct=1`，其他为 `0`）
+- `questions` 由 `Problem Name::Step Name` 组成
+- `concepts` 取 `KC (F2011)` 的首个 KC
+
+### D. xes3g5m
+方式 1：你有官方拆分 `train.csv` + `test.csv`（推荐）
+```bash
+python preprocess/prepare_registered_datasets.py --dataset xes3g5m --data_dir ./data/xes3g5m --train_file train.csv --test_file test.csv
+```
+
+方式 2：你只有单文件 `all.csv`，脚本自动按 8/2 切分
+```bash
+python preprocess/prepare_registered_datasets.py --dataset xes3g5m --data_dir ./data/xes3g5m --raw_file all.csv
+```
+
+`xes3g5m` 输入格式要求（每行一个用户）：
+- `uid`
+- `questions`（逗号分隔）
+- `concepts`（逗号分隔）
+- `responses`（逗号分隔）
+
 ---
 
 ## 6. 训练
 在项目根目录执行：
 
 ```bash
-python train/simple_train.py \
-  --data_dir ./data/assist2009 \
-  --save_dir ./saved_model_simple \
-  --epochs 100 \
-  --batch_size 64 \
-  --learning_rate 1e-4
+python train/simple_train.py --data_dir ./data/<dataset_name> --save_dir ./saved_model_simple --epochs 100 --batch_size 64 --learning_rate 1e-4
 ```
 
 训练日志每轮都会打印：
@@ -154,6 +213,6 @@ python train/simple_train.py --help
 只需要两条命令：
 
 ```bash
-python preprocess/prepare_assist2009.py --data_dir ./data/assist2009
+python preprocess/prepare_registered_datasets.py --dataset assist2009 --data_dir ./data/assist2009
 python train/simple_train.py --data_dir ./data/assist2009 --save_dir ./saved_model_simple
 ```
