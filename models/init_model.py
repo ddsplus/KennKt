@@ -32,6 +32,31 @@ def init_model(model_name, model_config, data_config, emb_type):
 
 def load_model(model_name, model_config, data_config, emb_type, ckpt_path):
     model = init_model(model_name, model_config, data_config, emb_type)
-    net = torch.load(os.path.join(ckpt_path, emb_type+"_model.ckpt"))
+    pth_path = os.path.join(ckpt_path, emb_type + "_model.pth")
+    ckpt_legacy_path = os.path.join(ckpt_path, emb_type + "_model.ckpt")
+
+    if os.path.exists(pth_path):
+        weight_path = pth_path
+    elif os.path.exists(ckpt_legacy_path):
+        weight_path = ckpt_legacy_path
+    else:
+        pth_candidates = sorted(
+            [
+                os.path.join(ckpt_path, fn)
+                for fn in os.listdir(ckpt_path)
+                if fn.endswith(".pth")
+            ],
+            key=os.path.getmtime,
+            reverse=True,
+        )
+        if not pth_candidates:
+            raise FileNotFoundError(
+                f"No checkpoint found in {ckpt_path}. "
+                f"Tried {pth_path}, {ckpt_legacy_path}, and any *.pth files."
+            )
+        weight_path = pth_candidates[0]
+
+    net = torch.load(weight_path, map_location=device)
     model.load_state_dict(net)
+    print(f"Loaded checkpoint: {weight_path}")
     return model
