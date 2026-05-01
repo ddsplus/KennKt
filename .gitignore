@@ -9,3 +9,4 @@ __pycache__/
 train/saved_model/
 data/
 datasets/
+saved_model_simple/
