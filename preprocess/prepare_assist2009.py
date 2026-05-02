@@ -115,15 +115,40 @@ def extend_multi_concepts(df: pd.DataFrame, effective_keys):
     return pd.DataFrame(dres), effective_keys
 
 
-def id_mapping(df: pd.DataFrame):
+def id_mapping(df: pd.DataFrame, vocab_dict: dict = None, is_train=True):
+    """
+    ID 映射函数，支持基于已有词汇表的映射
+    
+    Args:
+        df: 待映射的数据框
+        vocab_dict: 已有的词汇表字典，格式为 {"questions": {...}, "concepts": {...}}
+                   如果为 None，则从头构建词汇表
+        is_train: 是否为训练集
+                 - True: 构建或扩展词汇表
+                 - False: 仅使用已有词汇表，未知 ID 标记为 -1
+    
+    Returns:
+        mapped_df: 映射后的数据框
+        dkeyid2idx: ID 映射字典
+    
+    ⚠️ 关键修复：测试集中未知的题目/概念标记为 -1，避免 embedding 越界
+    """
     id_keys = ["questions", "concepts", "uid"]
     mapped = {}
     dkeyid2idx = {}
-
+    
+    # 初始化或复用词汇表
+    if vocab_dict is not None:
+        for key in id_keys:
+            if key in vocab_dict:
+                dkeyid2idx[key] = vocab_dict[key].copy()
+    
+    # 处理非 ID 列
     for key in df.columns:
         if key not in id_keys:
             mapped[key] = df[key].tolist()
-
+    
+    # 进行 ID 映射
     for _, row in df.iterrows():
         for key in id_keys:
             if key not in df.columns:
@@ -132,11 +157,19 @@ def id_mapping(df: pd.DataFrame):
             mapped.setdefault(key, [])
             cur = []
             for raw_id in str(row[key]).split(","):
-                if raw_id not in dkeyid2idx[key]:
-                    dkeyid2idx[key][raw_id] = len(dkeyid2idx[key])
-                cur.append(str(dkeyid2idx[key][raw_id]))
+                if is_train:
+                    # 训练集：构建或扩展词汇表
+                    if raw_id not in dkeyid2idx[key]:
+                        dkeyid2idx[key][raw_id] = len(dkeyid2idx[key])
+                    cur.append(str(dkeyid2idx[key][raw_id]))
+                else:
+                    # 测试集：仅使用已有词汇表，未知 ID 标记为 -1
+                    if raw_id in dkeyid2idx[key]:
+                        cur.append(str(dkeyid2idx[key][raw_id]))
+                    else:
+                        cur.append("-1")  # 未知 ID 标记为 -1
             mapped[key].append(",".join(cur))
-
+    
     return pd.DataFrame(mapped), dkeyid2idx
 
 
@@ -201,21 +234,38 @@ def main(args):
     print(f"[1/4] Preprocess raw assist2009: {raw_csv}")
     read_data_from_csv(raw_csv, data_txt)
 
-    print("[2/4] Build id mapping and split 8/2")
+    print("[2/4] Read data and split 8/2 FIRST (before ID mapping)")
     total_df, effective_keys = read_data(data_txt, min_seq_len=args.min_seq_len)
-    max_concepts = get_max_concepts(total_df) if "concepts" in effective_keys else -1
-
-    total_df, effective_keys = extend_multi_concepts(total_df, effective_keys)
-    total_df, dkeyid2idx = id_mapping(total_df)
+    
+    # ⚠️ 关键修复：先划分训练集和测试集，再进行 ID 映射
+    train_df_raw, test_df_raw = train_test_split(total_df, test_ratio=0.2)
+    print(f"  Train users: {len(train_df_raw)}, Test users: {len(test_df_raw)}")
+    
+    # 扩展多知识点（仅使用训练集）
+    train_df_raw, effective_keys = extend_multi_concepts(train_df_raw, effective_keys)
+    test_df_raw, _ = extend_multi_concepts(test_df_raw, effective_keys)
+    
+    # 计算 max_concepts（仅基于训练集）
+    max_concepts = get_max_concepts(train_df_raw) if "concepts" in effective_keys else -1
+    print(f"  Max concepts (from training set only): {max_concepts}")
+    
+    # ⚠️ 关键修复：仅使用训练集构建 ID 映射表
+    print("[3/4] Build ID mapping from training set ONLY")
+    train_df_mapped, dkeyid2idx = id_mapping(train_df_raw, vocab_dict=None, is_train=True)
     dkeyid2idx["max_concepts"] = max_concepts
+    
+    # ⚠️ 关键修复：测试集使用训练集的词汇表进行映射
+    # 训练集没有的题目标记为 -1，避免 embedding 越界
+    print("  Apply mapping to test set (unseen items marked as -1)")
+    test_df_mapped, _ = id_mapping(test_df_raw, vocab_dict=dkeyid2idx, is_train=False)
+    
+    print(f"  Vocabulary size - Questions: {len(dkeyid2idx.get('questions', {}))}, Concepts: {len(dkeyid2idx.get('concepts', {}))}")
+    
+    print("[4/4] Generate fixed-length sequences")
+    train_seqs = generate_sequences(train_df_mapped, effective_keys, args.min_seq_len, args.maxlen)
+    test_seqs = generate_sequences(test_df_mapped, effective_keys, args.min_seq_len, args.maxlen)
 
-    train_df, test_df = train_test_split(total_df, test_ratio=0.2)
-
-    print("[3/4] Generate fixed-length sequences")
-    train_seqs = generate_sequences(train_df, effective_keys, args.min_seq_len, args.maxlen)
-    test_seqs = generate_sequences(test_df, effective_keys, args.min_seq_len, args.maxlen)
-
-    print("[4/4] Save files")
+    print("[5/5] Save files")
     train_path = os.path.join(data_dir, "train_valid_sequences.csv")
     test_path = os.path.join(data_dir, "test_sequences.csv")
     keyid_path = os.path.join(data_dir, "keyid2idx.json")
@@ -245,10 +295,21 @@ def main(args):
     print(f"  - {test_path}")
     print(f"  - {keyid_path}")
     print(f"  - {os.path.join(data_dir, 'meta.json')}")
+    print("\n✅ Data leakage prevention applied:")
+    print("  ✓ Train/test split BEFORE ID mapping")
+    print("  ✓ ID vocabulary built from training set ONLY")
+    print("  ✓ max_concepts calculated from training set ONLY")
+    print("  ✓ Test set unseen items marked as -1 (prevents embedding OOB)")
+    print("\n📊 Statistics:")
+    train_unseen_q = sum(1 for q in test_df_mapped['questions'].str.split(',') if '-1' in q)
+    train_unseen_c = sum(1 for c in test_df_mapped['concepts'].str.split(',') if '-1' in c)
+    print(f"  - Test sequences with unseen questions: {train_unseen_q}")
+    print(f"  - Test sequences with unseen concepts: {train_unseen_c}")
+    print(f"  - Vocabulary size - Questions: {len(dkeyid2idx.get('questions', {}))}, Concepts: {len(dkeyid2idx.get('concepts', {}))}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Prepare assist2009 with 8/2 split")
+    parser = argparse.ArgumentParser(description="Prepare assist2009 with 8/2 split (NO DATA LEAKAGE)")
     parser.add_argument("--data_dir", type=str, default=os.path.join(ROOT, "data", "assist2009"))
     parser.add_argument("--raw_file", type=str, default="skill_builder_data.csv")
     parser.add_argument("--min_seq_len", type=int, default=3)

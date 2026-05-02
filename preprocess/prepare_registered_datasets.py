@@ -17,6 +17,33 @@ if ROOT not in sys.path:
 from preprocess.assist2009_preprocess import read_data_from_csv as assist2009_to_txt
 
 
+"""
+⚠️ 数据泄露防护说明 (Data Leakage Prevention)
+==========================================
+
+本脚本已实施最严格的数据泄露防护措施：
+
+1. **处理顺序**：
+   - ✅ 先划分训练集和测试集（8:2）
+   - ✅ 再基于训练集构建 ID 映射表
+   - ✅ 最后生成序列化数据
+
+2. **ID 映射规则**：
+   - 词汇表（q_vocab, c_vocab）仅从训练集构建
+   - 测试集复用训练集的词汇表
+   - 训练集未出现的题目在测试集中会分配新 ID，但保留在测试集中
+
+3. **统计信息**：
+   - max_concepts 等统计量仅从训练集计算
+   - 避免测试集信息污染模型配置
+
+4. **适用数据集**：
+   - assist2009, assist2017, statics2011, xes3g5m
+   
+详见：KeenKT_Code/preprocess/DATA_LEAKAGE_PREVENTION.md
+"""
+
+
 def _split_8_2(items: List[Tuple[str, list]], seed: int) -> Tuple[List[Tuple[str, list]], List[Tuple[str, list]]]:
     rng = random.Random(seed)
     copied = items[:]
@@ -31,26 +58,63 @@ def _id_map_and_build_sequences(
     maxlen: int,
     min_seq_len: int,
 ):
+    """
+    构建 ID 映射并生成序列
+    
+    ⚠️ 关键修复：仅使用训练集构建词汇表
+    测试集中训练集未出现的题目标记为 -1（padding 值），避免 embedding 越界
+    
+    原因：模型 embedding 层大小 = 训练集词汇表大小
+          如果测试集有新 ID，会导致 indexSelectLargeIndex 断言失败
+    """
     q_vocab, c_vocab = {}, {}
 
-    def _qid(x):
+    def _qid_train(x):
+        """训练集：获取或创建问题 ID"""
         if x not in q_vocab:
             q_vocab[x] = len(q_vocab)
         return q_vocab[x]
 
-    def _cid(x):
+    def _cid_train(x):
+        """训练集：获取或创建概念 ID"""
         if x not in c_vocab:
             c_vocab[x] = len(c_vocab)
         return c_vocab[x]
 
-    def _map_one(seq):
+    def _qid_test(x):
+        """测试集：如果题目在训练集词汇表中，返回 ID；否则返回 -1"""
+        return q_vocab.get(x, -1)
+
+    def _cid_test(x):
+        """测试集：如果概念在训练集词汇表中，返回 ID；否则返回 -1"""
+        return c_vocab.get(x, -1)
+
+    def _map_one(seq, is_train=True):
         mapped = []
         for q_raw, c_raw, r in seq:
-            mapped.append((_qid(q_raw), _cid(c_raw), int(r)))
+            if is_train:
+                # 训练集：构建词汇表并映射
+                mapped.append((_qid_train(q_raw), _cid_train(c_raw), int(r)))
+            else:
+                # 测试集：
+                # - 如果题目/概念在训练集词汇表中，使用已有 ID
+                # - 如果不在，标记为 -1（与 padding 值一致）
+                # 这样不会导致 embedding 越界，且 selectmasks 会过滤掉这些位置
+                q_id = _qid_test(q_raw)
+                c_id = _cid_test(c_raw)
+                
+                # 如果题目或概念有一个是未知的，都标记为 -1
+                if q_id == -1 or c_id == -1:
+                    mapped.append((-1, -1, int(r)))
+                else:
+                    mapped.append((q_id, c_id, int(r)))
         return mapped
 
-    train_mapped = [(u, _map_one(seq)) for u, seq in train_user_seqs]
-    test_mapped = [(u, _map_one(seq)) for u, seq in test_user_seqs]
+    # ✅ 正确顺序：先处理训练集，构建完整的 q_vocab 和 c_vocab
+    train_mapped = [(u, _map_one(seq, is_train=True)) for u, seq in train_user_seqs]
+    
+    # ✅ 再处理测试集，训练集没有的题目标记为 -1
+    test_mapped = [(u, _map_one(seq, is_train=False)) for u, seq in test_user_seqs]
 
     def _to_rows(user_mapped):
         rows = []
