@@ -125,13 +125,13 @@ def id_mapping(df: pd.DataFrame, vocab_dict: dict = None, is_train=True):
                    如果为 None，则从头构建词汇表
         is_train: 是否为训练集
                  - True: 构建或扩展词汇表
-                 - False: 仅使用已有词汇表，未知 ID 标记为 -1
+                 - False: 复用并扩展词汇表（测试集新题目分配新 ID）
     
     Returns:
         mapped_df: 映射后的数据框
         dkeyid2idx: ID 映射字典
     
-    ⚠️ 关键修复：测试集中未知的题目/概念标记为 -1，避免 embedding 越界
+    ✅ 新策略：测试集可以扩展词汇表，使未知题目也能参与预测
     """
     id_keys = ["questions", "concepts", "uid"]
     mapped = {}
@@ -157,17 +157,11 @@ def id_mapping(df: pd.DataFrame, vocab_dict: dict = None, is_train=True):
             mapped.setdefault(key, [])
             cur = []
             for raw_id in str(row[key]).split(","):
-                if is_train:
-                    # 训练集：构建或扩展词汇表
-                    if raw_id not in dkeyid2idx[key]:
-                        dkeyid2idx[key][raw_id] = len(dkeyid2idx[key])
-                    cur.append(str(dkeyid2idx[key][raw_id]))
-                else:
-                    # 测试集：仅使用已有词汇表，未知 ID 标记为 -1
-                    if raw_id in dkeyid2idx[key]:
-                        cur.append(str(dkeyid2idx[key][raw_id]))
-                    else:
-                        cur.append("-1")  # 未知 ID 标记为 -1
+                # 统一处理：存在则返回已有 ID，不存在则创建新 ID
+                # 训练集和测试集都使用相同逻辑，允许扩展词汇表
+                if raw_id not in dkeyid2idx[key]:
+                    dkeyid2idx[key][raw_id] = len(dkeyid2idx[key])
+                cur.append(str(dkeyid2idx[key][raw_id]))
             mapped[key].append(",".join(cur))
     
     return pd.DataFrame(mapped), dkeyid2idx
@@ -249,18 +243,17 @@ def main(args):
     max_concepts = get_max_concepts(train_df_raw) if "concepts" in effective_keys else -1
     print(f"  Max concepts (from training set only): {max_concepts}")
     
-    # ⚠️ 关键修复：仅使用训练集构建 ID 映射表
-    print("[3/4] Build ID mapping from training set ONLY")
+    # ✅ 新策略：先处理训练集构建基础词汇表，再处理测试集（可扩展词汇表）
+    print("[3/4] Build ID mapping (train first, then test with extension)")
     train_df_mapped, dkeyid2idx = id_mapping(train_df_raw, vocab_dict=None, is_train=True)
     dkeyid2idx["max_concepts"] = max_concepts
     
-    # ⚠️ 关键修复：测试集使用训练集的词汇表进行映射
-    # 训练集没有的题目标记为 -1，避免 embedding 越界
-    print("  Apply mapping to test set (unseen items marked as -1)")
-    test_df_mapped, _ = id_mapping(test_df_raw, vocab_dict=dkeyid2idx, is_train=False)
+    # ✅ 测试集复用训练集词汇表，新题目会扩展词汇表
+    print("  Apply mapping to test set (new items will extend vocabulary)")
+    test_df_mapped, dkeyid2idx = id_mapping(test_df_raw, vocab_dict=dkeyid2idx, is_train=False)
     
     print(f"  Vocabulary size - Questions: {len(dkeyid2idx.get('questions', {}))}, Concepts: {len(dkeyid2idx.get('concepts', {}))}")
-    
+
     print("[4/4] Generate fixed-length sequences")
     train_seqs = generate_sequences(train_df_mapped, effective_keys, args.min_seq_len, args.maxlen)
     test_seqs = generate_sequences(test_df_mapped, effective_keys, args.min_seq_len, args.maxlen)

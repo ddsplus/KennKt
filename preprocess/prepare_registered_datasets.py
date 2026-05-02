@@ -21,7 +21,7 @@ from preprocess.assist2009_preprocess import read_data_from_csv as assist2009_to
 ⚠️ 数据泄露防护说明 (Data Leakage Prevention)
 ==========================================
 
-本脚本已实施最严格的数据泄露防护措施：
+本脚本已实施严格的数据泄露防护措施：
 
 1. **处理顺序**：
    - ✅ 先划分训练集和测试集（8:2）
@@ -29,9 +29,9 @@ from preprocess.assist2009_preprocess import read_data_from_csv as assist2009_to
    - ✅ 最后生成序列化数据
 
 2. **ID 映射规则**：
-   - 词汇表（q_vocab, c_vocab）仅从训练集构建
-   - 测试集复用训练集的词汇表
-   - 训练集未出现的题目在测试集中会分配新 ID，但保留在测试集中
+   - 词汇表（q_vocab, c_vocab）从训练集开始构建
+   - 测试集可以扩展词汇表（新题目分配新 ID）
+   - 所有题目的 ID 都是有效的，参与预测和评估
 
 3. **统计信息**：
    - max_concepts 等统计量仅从训练集计算
@@ -39,6 +39,11 @@ from preprocess.assist2009_preprocess import read_data_from_csv as assist2009_to
 
 4. **适用数据集**：
    - assist2009, assist2017, statics2011, xes3g5m
+   
+5. **设计原理**：
+   - 允许测试集新题目参与预测，模拟真实场景
+   - 模型通过概念嵌入和作答模式泛化到新题目
+   - 训练集的关系（统计信息）保持纯净，防止泄露
    
 详见：KeenKT_Code/preprocess/DATA_LEAKAGE_PREVENTION.md
 """
@@ -61,11 +66,13 @@ def _id_map_and_build_sequences(
     """
     构建 ID 映射并生成序列
     
-    ⚠️ 关键修复：仅使用训练集构建词汇表
-    测试集中训练集未出现的题目标记为 -1（padding 值），避免 embedding 越界
+    ✅ 新策略：允许测试集扩展词汇表，使未知题目也能参与预测
+    - 训练集：构建基础词汇表
+    - 测试集：复用训练集词汇表，新题目分配新 ID（扩展词汇表）
+    - 最终词汇表大小 = 训练集 + 测试集新增
+    - 所有关系（统计信息）仅基于训练集
     
-    原因：模型 embedding 层大小 = 训练集词汇表大小
-          如果测试集有新 ID，会导致 indexSelectLargeIndex 断言失败
+    原因：模型可以泛化到未见过的题目，通过概念和作答模式进行学习
     """
     q_vocab, c_vocab = {}, {}
 
@@ -82,12 +89,16 @@ def _id_map_and_build_sequences(
         return c_vocab[x]
 
     def _qid_test(x):
-        """测试集：如果题目在训练集词汇表中，返回 ID；否则返回 -1"""
-        return q_vocab.get(x, -1)
+        """测试集：如果题目在词汇表中返回 ID，否则分配新 ID"""
+        if x not in q_vocab:
+            q_vocab[x] = len(q_vocab)  # 扩展词汇表
+        return q_vocab[x]
 
     def _cid_test(x):
-        """测试集：如果概念在训练集词汇表中，返回 ID；否则返回 -1"""
-        return c_vocab.get(x, -1)
+        """测试集：如果概念在词汇表中返回 ID，否则分配新 ID"""
+        if x not in c_vocab:
+            c_vocab[x] = len(c_vocab)  # 扩展词汇表
+        return c_vocab[x]
 
     def _map_one(seq, is_train=True):
         mapped = []
@@ -96,24 +107,16 @@ def _id_map_and_build_sequences(
                 # 训练集：构建词汇表并映射
                 mapped.append((_qid_train(q_raw), _cid_train(c_raw), int(r)))
             else:
-                # 测试集：
-                # - 如果题目/概念在训练集词汇表中，使用已有 ID
-                # - 如果不在，标记为 -1（与 padding 值一致）
-                # 这样不会导致 embedding 越界，且 selectmasks 会过滤掉这些位置
+                # 测试集：复用或扩展词汇表，所有题目都分配有效 ID
                 q_id = _qid_test(q_raw)
                 c_id = _cid_test(c_raw)
-                
-                # 如果题目或概念有一个是未知的，都标记为 -1
-                if q_id == -1 or c_id == -1:
-                    mapped.append((-1, -1, int(r)))
-                else:
-                    mapped.append((q_id, c_id, int(r)))
+                mapped.append((q_id, c_id, int(r)))
         return mapped
 
-    # ✅ 正确顺序：先处理训练集，构建完整的 q_vocab 和 c_vocab
+    # ✅ 先处理训练集，构建基础词汇表
     train_mapped = [(u, _map_one(seq, is_train=True)) for u, seq in train_user_seqs]
     
-    # ✅ 再处理测试集，训练集没有的题目标记为 -1
+    # ✅ 再处理测试集，新题目会扩展词汇表（分配新 ID）
     test_mapped = [(u, _map_one(seq, is_train=False)) for u, seq in test_user_seqs]
 
     def _to_rows(user_mapped):
