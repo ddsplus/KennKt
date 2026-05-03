@@ -236,36 +236,74 @@ def _prepare_statics2011(data_dir: str, args):
 
 
 def _read_xes_user_csv(path: str):
+    """
+    读取 xes3g5m CSV 文件
+    
+    ⚠️ 重要：将 questions/concepts 视为原始标识符（字符串），而非最终 ID
+    这样可以在后续阶段重新构建纯净的词汇表，防止数据泄露
+    """
     users = {}
     with open(path, "r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             uid = str(row["uid"])
+            # ✅ 保持为字符串，作为原始标识符
             qs = [x.strip() for x in str(row["questions"]).split(",") if x.strip()]
             cs = [x.strip() for x in str(row["concepts"]).split(",") if x.strip()]
             rs = [int(x.strip()) for x in str(row["responses"]).split(",") if x.strip()]
             n = min(len(qs), len(cs), len(rs))
             seq = []
             for i in range(n):
-                if int(qs[i]) <= 0 or int(cs[i]) <= 0 or rs[i] < 0:
+                # ✅ 不检查 ID 有效性，因为这是原始标识符
+                if rs[i] < 0:
                     continue
+                # 保持为字符串，后续会重新映射
                 seq.append((qs[i], cs[i], rs[i]))
             users[uid] = seq
     return list(users.items())
 
 
 def _prepare_xes3g5m(data_dir: str, args):
+    """
+    处理 xes3g5m 数据集
+    
+    ✅ 防泄露策略：
+    1. 读取预划分的 train/test CSV（或从合并文件划分）
+    2. 将 questions/concepts 视为原始标识符（字符串）
+    3. 先处理训练集，构建基础词汇表
+    4. 再处理测试集，允许扩展词汇表（新题目分配新 ID）
+    5. 所有统计信息仅基于训练集
+    """
     train_csv = os.path.join(data_dir, args.train_file)
     test_csv = os.path.join(data_dir, args.test_file)
+    
     if os.path.exists(train_csv) and os.path.exists(test_csv):
+        # ✅ 读取预划分的 CSV，但 questions/concepts 被视为原始标识符
         train_items = _read_xes_user_csv(train_csv)
         test_items = _read_xes_user_csv(test_csv)
+        print(f"[xes3g5m] 使用预划分文件:")
+        print(f"  - train: {len(train_items)} 用户")
+        print(f"  - test: {len(test_items)} 用户")
     else:
+        # ✅ 从合并文件随机划分
         merged_csv = os.path.join(data_dir, args.raw_file)
         all_items = _read_xes_user_csv(merged_csv)
         train_items, test_items = _split_8_2(all_items, args.seed)
+        print(f"[xes3g5m] 从合并文件随机划分 (seed={args.seed}):")
+        print(f"  - train: {len(train_items)} 用户")
+        print(f"  - test: {len(test_items)} 用户")
 
-    train_df, test_df, q_vocab, c_vocab = _id_map_and_build_sequences(train_items, test_items, args.maxlen, args.min_seq_len)
+    # ✅ 关键：_id_map_and_build_sequences 会重新构建词汇表
+    # - 训练集的原始标识符 → 新 ID（从 0 开始）
+    # - 测试集的新标识符 → 扩展 ID
+    train_df, test_df, q_vocab, c_vocab = _id_map_and_build_sequences(
+        train_items, test_items, args.maxlen, args.min_seq_len
+    )
+    
+    print(f"[xes3g5m] 词汇表大小:")
+    print(f"  - 题目: {len(q_vocab)} (训练集 + 测试集新增)")
+    print(f"  - 概念: {len(c_vocab)} (训练集 + 测试集新增)")
+    
     _save_outputs(data_dir, train_df, test_df, q_vocab, c_vocab, args.maxlen, args.min_seq_len, "xes3g5m")
 
 
