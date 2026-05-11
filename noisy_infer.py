@@ -90,11 +90,11 @@ def move_to_device(batch, device):
 
 def add_noise_to_batch(batch, noise_strength, device):
     """
-    对批次数据添加高斯噪声
+    对批次数据进行噪声处理：随机置换noise_strength比例的答案
     
     Args:
         batch: 数据批次（包含各种序列）
-        noise_strength: 噪声强度（标准差）
+        noise_strength: 噪声强度（0-1之间，表示置换的答案比例）
         device: 计算设备
         
     Returns:
@@ -104,21 +104,20 @@ def add_noise_to_batch(batch, noise_strength, device):
     
     for k, v in batch.items():
         if k in ["rseqs", "shft_rseqs"]:
-            # 对响应序列添加噪声（响应是0或1的二分类）
-            # 添加高斯噪声，然后裁剪到 [0, 1]
-            noise = torch.normal(0, noise_strength, v.shape, device=device)
-            noisy_v = v.float() + noise
-            noisy_v = torch.clamp(noisy_v, 0, 1)
-            noisy_batch[k] = noisy_v.long() if k.startswith("shft_") else noisy_v.long()
-        elif k in ["qseqs", "cseqs", "shft_qseqs", "shft_cseqs"]:
-            # 对问题/概念ID序列添加噪声（转换为浮点，加噪声，然后四舍五入回整数）
-            v_float = v.float()
-            noise = torch.normal(0, noise_strength, v_float.shape, device=device)
-            noisy_v = v_float + noise
-            noisy_v = torch.round(torch.clamp(noisy_v, 0)).long()
-            noisy_batch[k] = noisy_v
+            # 对响应序列进行随机置换
+            # 响应是0或1的二分类，置换就是翻转 (1 - rseqs)
+            noisy_v = v.clone()
+            
+            # 生成随机掩码，标记要置换的位置
+            # noise_strength 表示置换的比例（0-1）
+            flip_mask = torch.rand(v.shape, device=device) < noise_strength
+            
+            # 对选中位置进行置换（0->1, 1->0）
+            noisy_v = noisy_v.float()
+            noisy_v[flip_mask] = 1.0 - noisy_v[flip_mask]
+            noisy_batch[k] = noisy_v.long()
         else:
-            # 对掩码和其他布尔/整数值保持不变
+            # 其他字段（问题、概念、掩码等）保持不变
             noisy_batch[k] = v
     
     return noisy_batch
@@ -127,13 +126,13 @@ def add_noise_to_batch(batch, noise_strength, device):
 @torch.no_grad()
 def evaluate_with_noise(model, loader, device, noise_strength):
     """
-    带噪声的评估函数
+    带噪声的评估函数（随机置换答案）
     
     Args:
         model: KeenKT 模型
         loader: 数据加载器
         device: 计算设备
-        noise_strength: 噪声强度（标准差）
+        noise_strength: 噪声强度（0-1，表示置换的答案比例）
         
     Returns:
         auc: ROC-AUC 分数
@@ -171,7 +170,7 @@ def noisy_infer_model(model_path, dataset_name, noise_strength=0.1, data_dir=Non
     Args:
         model_path: 模型文件路径 (.pth)
         dataset_name: 数据集名称 (assist2009, assist2017, statics2011, xes3g5m)
-        noise_strength: 噪声强度（标准差，默认0.1）
+        noise_strength: 噪声强度（0-1之间，表示随机置换的答案比例，默认0.1）
         data_dir: 数据目录路径（可选，默认自动定位）
         batch_size: 批次大小
         
@@ -181,7 +180,7 @@ def noisy_infer_model(model_path, dataset_name, noise_strength=0.1, data_dir=Non
     # 设置设备
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    print(f"Noise strength: {noise_strength}")
+    print(f"Answer flip ratio: {noise_strength}")
     
     # 确定数据目录
     if data_dir is None:
@@ -280,11 +279,11 @@ def noisy_infer_model(model_path, dataset_name, noise_strength=0.1, data_dir=Non
     print("Model loaded successfully!")
     
     # 评估模型（带噪声）
-    print("\nEvaluating on test set with noise...")
+    print("\nEvaluating on test set with answer flipping...")
     auc, acc = evaluate_with_noise(model, test_loader, device, noise_strength)
     
     print("\n" + "="*60)
-    print(f"Results for {dataset_name} (noise_strength={noise_strength}):")
+    print(f"Results for {dataset_name} (answer flip ratio={noise_strength}):")
     print(f"  AUC: {auc:.6f}")
     print(f"  ACC: {acc:.6f}")
     print("="*60)
@@ -299,7 +298,7 @@ def noisy_infer_model(model_path, dataset_name, noise_strength=0.1, data_dir=Non
 
 def main():
     parser = argparse.ArgumentParser(
-        description="KeenKT Noisy Inference Script - Evaluate model on test set with input noise"
+        description="KeenKT Noisy Inference Script - Evaluate model on test set with answer flipping"
     )
     
     parser.add_argument(
@@ -321,7 +320,7 @@ def main():
         "--noise_strength", 
         type=float, 
         default=0.1,
-        help="Noise strength (standard deviation) to add to input sequences (default: 0.1)"
+        help="Noise strength (0-1, ratio of answers to flip) to add to input sequences (default: 0.1)"
     )
     
     parser.add_argument(
